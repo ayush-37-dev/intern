@@ -1,0 +1,189 @@
+-- Movie Review Platform Database Schema
+-- Compatible with PostgreSQL/MySQL
+
+-- Users table
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    profile_picture VARCHAR(255),
+    join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_admin BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Movies table
+CREATE TABLE movies (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    director VARCHAR(100) NOT NULL,
+    release_year INTEGER NOT NULL,
+    synopsis TEXT,
+    poster_url VARCHAR(255),
+    trailer_url VARCHAR(255),
+    duration INTEGER, -- in minutes
+    average_rating DECIMAL(3,2) DEFAULT 0.00,
+    total_reviews INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Genres table (for normalization)
+CREATE TABLE genres (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Movie-Genre junction table (many-to-many relationship)
+CREATE TABLE movie_genres (
+    movie_id INTEGER REFERENCES movies(id) ON DELETE CASCADE,
+    genre_id INTEGER REFERENCES genres(id) ON DELETE CASCADE,
+    PRIMARY KEY (movie_id, genre_id)
+);
+
+-- Cast members table
+CREATE TABLE cast_members (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    profile_picture VARCHAR(255),
+    bio TEXT,
+    birth_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Movie-Cast junction table
+CREATE TABLE movie_cast (
+    movie_id INTEGER REFERENCES movies(id) ON DELETE CASCADE,
+    cast_member_id INTEGER REFERENCES cast_members(id) ON DELETE CASCADE,
+    role VARCHAR(100), -- e.g., "Actor", "Director", "Producer"
+    character_name VARCHAR(100), -- character name if actor
+    PRIMARY KEY (movie_id, cast_member_id, role)
+);
+
+-- Reviews table
+CREATE TABLE reviews (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    movie_id INTEGER REFERENCES movies(id) ON DELETE CASCADE,
+    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    review_text TEXT NOT NULL,
+    helpful_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, movie_id) -- One review per user per movie
+);
+
+-- Watchlist table
+CREATE TABLE watchlists (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    movie_id INTEGER REFERENCES movies(id) ON DELETE CASCADE,
+    date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    priority INTEGER DEFAULT 0, -- for ordering
+    notes TEXT,
+    UNIQUE(user_id, movie_id)
+);
+
+-- Review helpfulness table (for "helpful" votes on reviews)
+CREATE TABLE review_votes (
+    id SERIAL PRIMARY KEY,
+    review_id INTEGER REFERENCES reviews(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    is_helpful BOOLEAN NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(review_id, user_id)
+);
+
+-- User follows table (for social features)
+CREATE TABLE user_follows (
+    id SERIAL PRIMARY KEY,
+    follower_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    following_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(follower_id, following_id),
+    CHECK(follower_id != following_id)
+);
+
+-- Movie recommendations table (for recommendation system)
+CREATE TABLE recommendations (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    movie_id INTEGER REFERENCES movies(id) ON DELETE CASCADE,
+    score DECIMAL(3,2) NOT NULL,
+    reason VARCHAR(255), -- e.g., "Based on your rating of Pulp Fiction"
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for better performance
+CREATE INDEX idx_movies_release_year ON movies(release_year);
+CREATE INDEX idx_movies_average_rating ON movies(average_rating DESC);
+CREATE INDEX idx_reviews_movie_id ON reviews(movie_id);
+CREATE INDEX idx_reviews_user_id ON reviews(user_id);
+CREATE INDEX idx_reviews_created_at ON reviews(created_at DESC);
+CREATE INDEX idx_watchlists_user_id ON watchlists(user_id);
+CREATE INDEX idx_movie_genres_movie_id ON movie_genres(movie_id);
+CREATE INDEX idx_movie_genres_genre_id ON movie_genres(genre_id);
+
+-- Triggers to update average rating when reviews are added/updated/deleted
+CREATE OR REPLACE FUNCTION update_movie_rating()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE movies 
+    SET 
+        average_rating = (
+            SELECT COALESCE(AVG(rating::DECIMAL), 0) 
+            FROM reviews 
+            WHERE movie_id = COALESCE(NEW.movie_id, OLD.movie_id)
+        ),
+        total_reviews = (
+            SELECT COUNT(*) 
+            FROM reviews 
+            WHERE movie_id = COALESCE(NEW.movie_id, OLD.movie_id)
+        ),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = COALESCE(NEW.movie_id, OLD.movie_id);
+    
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_movie_rating_insert
+    AFTER INSERT ON reviews
+    FOR EACH ROW
+    EXECUTE FUNCTION update_movie_rating();
+
+CREATE TRIGGER trigger_update_movie_rating_update
+    AFTER UPDATE ON reviews
+    FOR EACH ROW
+    EXECUTE FUNCTION update_movie_rating();
+
+CREATE TRIGGER trigger_update_movie_rating_delete
+    AFTER DELETE ON reviews
+    FOR EACH ROW
+    EXECUTE FUNCTION update_movie_rating();
+
+-- Sample data insertion
+INSERT INTO genres (name) VALUES 
+('Action'), ('Comedy'), ('Drama'), ('Horror'), ('Romance'), 
+('Thriller'), ('Sci-Fi'), ('Fantasy'), ('Crime'), ('Adventure'),
+('Animation'), ('Documentary'), ('Musical'), ('Western'), ('War');
+
+INSERT INTO movies (title, director, release_year, synopsis, poster_url) VALUES 
+('The Shawshank Redemption', 'Frank Darabont', 1994, 
+ 'Two imprisoned men bond over a number of years, finding solace and eventual redemption through acts of common decency.',
+ 'https://via.placeholder.com/300x450?text=Shawshank'),
+('The Godfather', 'Francis Ford Coppola', 1972,
+ 'The aging patriarch of an organized crime dynasty transfers control of his clandestine empire to his reluctant son.',
+ 'https://via.placeholder.com/300x450?text=Godfather'),
+('Pulp Fiction', 'Quentin Tarantino', 1994,
+ 'The lives of two mob hitmen, a boxer, a gangster and his wife intertwine in four tales of violence and redemption.',
+ 'https://via.placeholder.com/300x450?text=Pulp+Fiction');
+
+-- Link movies to genres
+INSERT INTO movie_genres (movie_id, genre_id) VALUES 
+(1, 3), -- Shawshank - Drama
+(2, 9), (2, 3), -- Godfather - Crime, Drama
+(3, 9), (3, 3); -- Pulp Fiction - Crime, Drama
